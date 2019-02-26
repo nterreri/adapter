@@ -864,6 +864,33 @@ module.exports = function(window, edgeVersion) {
               false);
         }
       });
+
+      var newDescriptionSections = SDPUtils.splitSections(description.sdp);
+      sessionpart = newDescriptionSections.shift();
+      newDescriptionSections.forEach(function(_, sdpMLineIndex) {
+        var transceiver = pc.transceivers[sdpMLineIndex];
+        var iceGatherer = transceiver.iceGatherer;
+        if (iceGatherer.state === 'completed') {
+          var candidates = iceGatherer.getLocalCandidates();
+          for (var i = 0; i < candidates.length; i++) {
+            var candidate = candidates[i];
+            // RTCIceCandidate doesn't have a component, needs to be added
+            candidate.component = 1;
+            // also the usernameFragment. TODO: update SDP to take both variants
+            candidate.ufrag = iceGatherer.getLocalParameters().usernameFragment;
+
+            var serializedCandidate = SDPUtils.writeCandidate(candidate);
+
+            newDescriptionSections[sdpMLineIndex] +=
+              'a=' + serializedCandidate + '\r\n';
+          }
+          // newDescriptionSections[sdpMLineIndex] += 'a=end-of-candidates\r\n';
+
+          description.sdp =
+              SDPUtils.getDescription(description.sdp) +
+              newDescriptionSections.join('');
+        }
+      });
     }
 
     pc._localDescription = {
@@ -1138,6 +1165,19 @@ module.exports = function(window, edgeVersion) {
           if (dtlsTransport.state === 'new') {
             dtlsTransport.start(remoteDtlsParameters);
           }
+        }
+
+        // If the offer contained RTX but the answer did not,
+        // remove RTX from sendEncodingParameters.
+        var commonCapabilities = getCommonCapabilities(
+          transceiver.localCapabilities,
+          transceiver.remoteCapabilities);
+
+        var hasRtx = commonCapabilities.codecs.filter(function(c) {
+          return c.name.toLowerCase() === 'rtx';
+        }).length;
+        if (!hasRtx && transceiver.sendEncodingParameters[0].rtx) {
+          delete transceiver.sendEncodingParameters[0].rtx;
         }
 
         pc._transceive(transceiver,
@@ -1555,6 +1595,8 @@ module.exports = function(window, edgeVersion) {
         return t.mid;
       }).join(' ') + '\r\n';
     }
+    sdp += 'a=ice-options:trickle\r\n';
+
     var mediaSectionsInOffer = SDPUtils.getMediaSections(
         pc._remoteDescription.sdp).length;
     pc.transceivers.forEach(function(transceiver, sdpMLineIndex) {
@@ -1905,6 +1947,7 @@ SDPUtils.parseCandidate = function(line) {
     protocol: parts[2].toLowerCase(),
     priority: parseInt(parts[3], 10),
     ip: parts[4],
+    address: parts[4], // address is an alias for ip.
     port: parseInt(parts[5], 10),
     // skip parts[6] == 'typ'
     type: parts[7]
@@ -1940,7 +1983,7 @@ SDPUtils.writeCandidate = function(candidate) {
   sdp.push(candidate.component);
   sdp.push(candidate.protocol.toUpperCase());
   sdp.push(candidate.priority);
-  sdp.push(candidate.ip);
+  sdp.push(candidate.address || candidate.ip);
   sdp.push(candidate.port);
 
   var type = candidate.type;
@@ -2304,7 +2347,7 @@ SDPUtils.parseRtpEncodingParameters = function(mediaSection) {
       if (hasRed) {
         encParam = JSON.parse(JSON.stringify(encParam));
         encParam.fec = {
-          ssrc: secondarySsrc,
+          ssrc: primarySsrc,
           mechanism: hasUlpfec ? 'red+ulpfec' : 'red'
         };
         encodingParameters.push(encParam);
@@ -2402,7 +2445,8 @@ SDPUtils.generateSessionId = function() {
 // sessId argument is optional - if not supplied it will
 // be generated randomly
 // sessVersion is optional and defaults to 2
-SDPUtils.writeSessionBoilerplate = function(sessId, sessVer) {
+// sessUser is optional and defaults to 'thisisadapterortc'
+SDPUtils.writeSessionBoilerplate = function(sessId, sessVer, sessUser) {
   var sessionId;
   var version = sessVer !== undefined ? sessVer : 2;
   if (sessId) {
@@ -2410,9 +2454,10 @@ SDPUtils.writeSessionBoilerplate = function(sessId, sessVer) {
   } else {
     sessionId = SDPUtils.generateSessionId();
   }
+  var user = sessUser || 'thisisadapterortc';
   // FIXME: sess-id should be an NTP timestamp.
   return 'v=0\r\n' +
-      'o=thisisadapterortc ' + sessionId + ' ' + version +
+      'o=' + user + ' ' + sessionId + ' ' + version +
         ' IN IP4 127.0.0.1\r\n' +
       's=-\r\n' +
       't=0 0\r\n';

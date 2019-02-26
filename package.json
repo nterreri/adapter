@@ -22,7 +22,7 @@
     "test": "grunt && grunt downloadBrowser && mocha test/unit && karma start test/karma.conf.js"
   },
   "dependencies": {
-    "rtcpeerconnection-shim": "^1.2.15",
+    "rtcpeerconnection-shim": "https://github.com/nterreri/rtcpeerconnection-shim.git",
     "sdp": "^2.9.0"
   },
   "engines": {
